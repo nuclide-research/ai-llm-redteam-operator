@@ -1,5 +1,5 @@
 """
-CLI for AI_LLM_RedTeam_Operator.
+CLI for AegisLLM_Operator.
 
 Usage:
     python -m ai_llm_redteam_operator.cli category open_gateways
@@ -16,7 +16,8 @@ import json
 import os
 import sys
 
-from .operator import AI_LLM_RedTeam_Operator
+from .operator import AegisLLM_Operator
+from .models import ExposureCategory, AttackPath
 
 
 DEFAULT_DB      = os.path.expanduser("~/AI-LLM-Infrastructure-OSINT/data/nuclide.db")
@@ -68,14 +69,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_KNOWN_VALUES = {
+    "category":    ExposureCategory.ALL,
+    "attack_path": AttackPath.ALL,
+    "platform":    list(ExposureCategory.PLATFORM_MAP.keys()),
+}
+
+
 def main(argv=None):
     parser = build_parser()
     args   = parser.parse_args(argv)
 
-    op = AI_LLM_RedTeam_Operator(args.db, args.coords, args.details)
+    op = AegisLLM_Operator(args.db, args.coords, args.details)
 
     if args.list_values:
-        values = op.list_known_values(args.list_values)
+        values = _KNOWN_VALUES.get(args.list_values, [])
         print(f"Known {args.list_values} values:")
         for v in values:
             print(f"  {v}")

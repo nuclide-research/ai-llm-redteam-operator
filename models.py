@@ -1,209 +1,236 @@
 """
-Data models for AI_LLM_RedTeam_Operator scenario packets.
+AegisLLM Operator - Data Models
 
-All models are plain dataclasses; use asdict() or .to_dict() for JSON export.
-Literal type hints document allowed values but are not enforced at runtime --
-add Pydantic if you want validation.
+All models are stdlib dataclasses. Serialize the full packet with:
+    import dataclasses
+    dataclasses.asdict(packet)
 """
 
-from __future__ import annotations
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
+from typing import Dict, List, Literal, Optional
 
 
 # ---------------------------------------------------------------------------
-# Domain enums (strings, not Enum classes, so they serialize cleanly)
+# Type aliases (runtime: plain strings; type checkers see the Literal bounds)
+# ---------------------------------------------------------------------------
+
+FocusType = Literal["category", "platform", "attack_path"]
+SeverityLevel = Literal["info", "low", "medium", "high", "critical"]
+Criticality = Literal["low", "medium", "high", "mission_critical"]
+Confidence = Literal["low", "medium", "high"]
+Aggressiveness = Literal["low_noise", "medium", "high"]
+NoiseProfile = Literal["low_noise", "medium", "high"]
+SurfaceElementType = Literal["http_path", "port", "header_pattern", "banner_pattern"]
+
+
+# ---------------------------------------------------------------------------
+# Domain registries
 # ---------------------------------------------------------------------------
 
 class ExposureCategory:
     EXPOSED_MODEL_RUNTIMES = "exposed_model_runtimes"
-    OPEN_GATEWAYS          = "open_gateways"
-    NOTEBOOKS              = "notebooks"
-    CHAT_UIS               = "chat_uis"
-    LEAKY_DATA_STORES      = "leaky_data_stores"
-    KEY_ABUSE              = "key_abuse"
-    OBSERVABILITY          = "observability"
-    AGENT_SURFACES         = "agent_surfaces"
+    OPEN_GATEWAYS         = "open_gateways"
+    NOTEBOOKS             = "notebooks"
+    CHAT_UIS              = "chat_uis"
+    LEAKY_DATA_STORES     = "leaky_data_stores"
+    KEY_ABUSE             = "key_abuse"
+    OBSERVABILITY         = "observability"
+    AGENT_SURFACES        = "agent_surfaces"
 
-    ALL: List[str] = [
+    ALL = [
         EXPOSED_MODEL_RUNTIMES, OPEN_GATEWAYS, NOTEBOOKS, CHAT_UIS,
         LEAKY_DATA_STORES, KEY_ABUSE, OBSERVABILITY, AGENT_SURFACES,
     ]
 
+    # platform string -> category
+    PLATFORM_MAP: Dict[str, str] = {
+        "Ollama":       EXPOSED_MODEL_RUNTIMES,
+        "vLLM":         EXPOSED_MODEL_RUNTIMES,
+        "LiteLLM":      OPEN_GATEWAYS,
+        "One-API":      OPEN_GATEWAYS,
+        "Kong":         OPEN_GATEWAYS,
+        "PortKey.ai":   OPEN_GATEWAYS,
+        "JupyterHub":   NOTEBOOKS,
+        "Open WebUI":   CHAT_UIS,
+        "Streamlit":    CHAT_UIS,
+        "Elasticsearch": LEAKY_DATA_STORES,
+        "Weaviate":     LEAKY_DATA_STORES,
+        "Qdrant":       LEAKY_DATA_STORES,
+        "Milvus":       LEAKY_DATA_STORES,
+        "MLflow":       OBSERVABILITY,
+        "Langfuse":     OBSERVABILITY,
+        "Flowise":      AGENT_SURFACES,
+        "Langflow":     AGENT_SURFACES,
+    }
+
+    # category -> canonical platform list
+    PLATFORMS: Dict[str, List[str]] = {
+        EXPOSED_MODEL_RUNTIMES: ["Ollama", "vLLM"],
+        OPEN_GATEWAYS:          ["LiteLLM", "One-API", "Kong", "PortKey.ai"],
+        NOTEBOOKS:              ["JupyterHub"],
+        CHAT_UIS:               ["Open WebUI", "Streamlit"],
+        LEAKY_DATA_STORES:      ["Elasticsearch", "Weaviate", "Qdrant", "Milvus"],
+        OBSERVABILITY:          ["MLflow", "Langfuse"],
+        AGENT_SURFACES:         ["Flowise", "Langflow"],
+    }
+
 
 class AttackPath:
-    OPEN_GATEWAY_LLMJACKING         = "open_gateway_llmjacking"
-    OLLAMA_11434_HOST_TAKEOVER      = "ollama_11434_host_takeover"
-    FLOWISE_TO_WEAVIATE_PII_DUMP    = "flowise_to_weaviate_pii_dump"
-    OPEN_WEBUI_OPEN_SIGNUP_RAG_SEAT = "open_webui_open_signup_rag_seat"
-    OPEN_JUPYTER_GPU_RCE            = "open_jupyter_gpu_rce"
+    OPEN_GATEWAY_LLMJACKING          = "open_gateway_llmjacking"
+    OLLAMA_11434_HOST_TAKEOVER       = "ollama_11434_host_takeover"
+    FLOWISE_TO_WEAVIATE_PII_DUMP     = "flowise_to_weaviate_pii_dump"
+    OPEN_WEBUI_OPEN_SIGNUP_RAG_SEAT  = "open_webui_open_signup_rag_seat"
+    OPEN_JUPYTER_GPU_RCE             = "open_jupyter_gpu_rce"
 
-    ALL: List[str] = [
+    ALL = [
         OPEN_GATEWAY_LLMJACKING, OLLAMA_11434_HOST_TAKEOVER,
         FLOWISE_TO_WEAVIATE_PII_DUMP, OPEN_WEBUI_OPEN_SIGNUP_RAG_SEAT,
         OPEN_JUPYTER_GPU_RCE,
     ]
 
-
-# ---------------------------------------------------------------------------
-# Mixin
-# ---------------------------------------------------------------------------
-
-class _Serializable:
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)  # type: ignore[arg-type]
-
-    def to_json(self, indent: int = 2) -> str:
-        import json
-        return json.dumps(self.to_dict(), indent=indent)
+    # attack path -> primary exposure category
+    CATEGORY_MAP: Dict[str, str] = {
+        OPEN_GATEWAY_LLMJACKING:         ExposureCategory.OPEN_GATEWAYS,
+        OLLAMA_11434_HOST_TAKEOVER:      ExposureCategory.EXPOSED_MODEL_RUNTIMES,
+        FLOWISE_TO_WEAVIATE_PII_DUMP:    ExposureCategory.AGENT_SURFACES,
+        OPEN_WEBUI_OPEN_SIGNUP_RAG_SEAT: ExposureCategory.CHAT_UIS,
+        OPEN_JUPYTER_GPU_RCE:            ExposureCategory.NOTEBOOKS,
+    }
 
 
 # ---------------------------------------------------------------------------
-# ReconMapping models
+# Leaf models
 # ---------------------------------------------------------------------------
 
 @dataclass
-class SurfaceElement(_Serializable):
-    # type: "http_path" | "port" | "header_pattern" | "banner_pattern"
-    type: str
+class SurfaceElement:
+    type: SurfaceElementType
     pattern: str
     notes: str
 
 
 @dataclass
-class HTTPProbePattern(_Serializable):
+class HTTPProbePattern:
+    id: str
     description: str
     methods: List[str]
     paths: List[str]
     headers: Dict[str, str]
+    body_shape: Optional[str]
+    aggressiveness: Aggressiveness
+    goals: List[str]
     notes: str
 
 
 @dataclass
-class ReconMapping(_Serializable):
-    surface_elements: List[SurfaceElement]
-    http_probe_patterns: List[HTTPProbePattern]
-    mapping_strategy: List[str]
-
-
-# ---------------------------------------------------------------------------
-# ThreatModel models
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Asset(_Serializable):
+class ReconPhase:
+    id: str
     name: str
     description: str
+    probe_ids: List[str]
 
 
 @dataclass
-class ThreatHypothesis(_Serializable):
+class Asset:
+    name: str
+    description: str
+    criticality: Criticality
+
+
+@dataclass
+class ThreatHypothesis:
     id: str
     description: str
     related_categories: List[str]
     related_attack_paths: List[str]
-    # "low" | "medium" | "high" | "critical"
-    impact_if_confirmed: str
+    impact_if_confirmed: SeverityLevel
+    confidence: Confidence
+    notes: str
 
 
 @dataclass
-class ThreatModel(_Serializable):
-    assets: List[Asset]
-    hypotheses: List[ThreatHypothesis]
-
-
-# ---------------------------------------------------------------------------
-# TestCase
-# ---------------------------------------------------------------------------
-
-@dataclass
-class TestCase(_Serializable):
+class TestCase:
     id: str
     objective: str
     preconditions: List[str]
     steps_summary: List[str]
     expected_weak_signals: List[str]
-    # "low" | "medium" | "high" | "critical"
-    severity_if_confirmed: str
+    severity_if_confirmed: SeverityLevel
+    noise_level: Aggressiveness
+    detection_focus: List[str]
+    related_assets: List[str]
     notes: str
 
 
-# ---------------------------------------------------------------------------
-# AttackChain
-# ---------------------------------------------------------------------------
-
 @dataclass
-class AttackChain(_Serializable):
+class AttackChain:
     id: str
     name: str
-    steps: List[str]  # TestCase IDs in sequence
+    steps: List[str]                    # TestCase IDs in sequence
     summary: str
+    overall_noise_profile: NoiseProfile
+    defender_learning_goals: List[str]
+    related_attack_paths: List[str]
 
-
-# ---------------------------------------------------------------------------
-# Detection / Telemetry
-# ---------------------------------------------------------------------------
 
 @dataclass
-class LoggingRecommendation(_Serializable):
+class LoggingRecommendation:
     event: str
     fields: List[str]
     notes: str
 
 
 @dataclass
-class DetectionIdea(_Serializable):
+class DetectionIdea:
     pattern: str
-    # "low" | "medium" | "high" | "critical"
-    severity: str
+    severity: SeverityLevel
     notes: str
 
 
-@dataclass
-class DetectionTelemetry(_Serializable):
-    logging_recommendations: List[LoggingRecommendation]
-    detection_ideas: List[DetectionIdea]
-
-
 # ---------------------------------------------------------------------------
-# Hardening
+# Composite models
 # ---------------------------------------------------------------------------
 
 @dataclass
-class Hardening(_Serializable):
-    quick_wins: List[str]
-    architectural_changes: List[str]
-    template_guidance: List[str]
-
-
-# ---------------------------------------------------------------------------
-# TargetProfile
-# ---------------------------------------------------------------------------
-
-@dataclass
-class HostSummary(_Serializable):
-    total_hosts: int
-    severity_counts: Dict[str, int]
-    sector_counts: Dict[str, int]
-    auth_posture_counts: Dict[str, int]
-
-
-@dataclass
-class TargetProfile(_Serializable):
-    # "category" | "platform" | "attack_path"
-    focus_type: str
+class TargetProfile:
+    focus_type: FocusType
     focus_value: str
-    host_summary: HostSummary
+    host_summary: Dict                  # total_hosts, severity_counts, sector_counts, auth_posture_counts
     typical_platforms: List[str]
+    notable_patterns: List[str]
     representative_notes: str
 
 
-# ---------------------------------------------------------------------------
-# Top-level ScenarioPacket
-# ---------------------------------------------------------------------------
+@dataclass
+class ReconMapping:
+    surface_elements: List[SurfaceElement]
+    http_probe_patterns: List[HTTPProbePattern]
+    recon_phases: List[ReconPhase]
+
 
 @dataclass
-class ScenarioPacket(_Serializable):
+class ThreatModel:
+    assets: List[Asset]
+    hypotheses: List[ThreatHypothesis]
+
+
+@dataclass
+class DetectionTelemetry:
+    logging_recommendations: List[LoggingRecommendation]
+    detection_ideas: List[DetectionIdea]
+    stealth_considerations: List[str]
+
+
+@dataclass
+class Hardening:
+    quick_wins: List[str]
+    architectural_changes: List[str]
+    detection_engineering_actions: List[str]
+    template_guidance: List[str]
+
+
+@dataclass
+class ScenarioPacket:
     target_profile: TargetProfile
     recon_mapping: ReconMapping
     threat_model: ThreatModel
@@ -211,34 +238,3 @@ class ScenarioPacket(_Serializable):
     attack_chains: List[AttackChain]
     detection_telemetry: DetectionTelemetry
     hardening: Hardening
-
-    # ------------------------------------------------------------------
-    # Convenience: rebuild from a dict (e.g., loaded from stored JSON)
-    # ------------------------------------------------------------------
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ScenarioPacket":
-        hs = d["target_profile"]["host_summary"]
-        tp = TargetProfile(
-            focus_type=d["target_profile"]["focus_type"],
-            focus_value=d["target_profile"]["focus_value"],
-            host_summary=HostSummary(**hs),
-            typical_platforms=d["target_profile"]["typical_platforms"],
-            representative_notes=d["target_profile"]["representative_notes"],
-        )
-        rm = ReconMapping(
-            surface_elements=[SurfaceElement(**e) for e in d["recon_mapping"]["surface_elements"]],
-            http_probe_patterns=[HTTPProbePattern(**p) for p in d["recon_mapping"]["http_probe_patterns"]],
-            mapping_strategy=d["recon_mapping"]["mapping_strategy"],
-        )
-        tm = ThreatModel(
-            assets=[Asset(**a) for a in d["threat_model"]["assets"]],
-            hypotheses=[ThreatHypothesis(**h) for h in d["threat_model"]["hypotheses"]],
-        )
-        tcs = [TestCase(**tc) for tc in d["test_cases"]]
-        acs = [AttackChain(**ac) for ac in d["attack_chains"]]
-        dt = DetectionTelemetry(
-            logging_recommendations=[LoggingRecommendation(**l) for l in d["detection_telemetry"]["logging_recommendations"]],
-            detection_ideas=[DetectionIdea(**di) for di in d["detection_telemetry"]["detection_ideas"]],
-        )
-        h = Hardening(**d["hardening"])
-        return cls(tp, rm, tm, tcs, acs, dt, h)
