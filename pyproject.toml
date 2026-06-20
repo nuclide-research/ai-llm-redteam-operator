@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-llm-redteam-operator"
-version = "0.1.0"
-description = "Scenario-packet generator for authorized AI/LLM red-team and detection engineering."
+version = "0.2.0"
+description = "Agentic workflow for authorized AI/LLM red-team and detection engineering: plan a scenario, then execute it against a scoped target."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }

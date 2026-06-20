@@ -18,6 +18,21 @@ Usage:
 """
 
 from .operator import AegisLLM_Operator
+from .agent import (
+    AuthorizationError,
+    ChainOutcome,
+    Finding,
+    LLMStrategist,
+    Observation,
+    ProbeRunner,
+    RedTeamAgent,
+    RunConfig,
+    RunReport,
+    ScopeError,
+    SignalEvaluator,
+    build_agent,
+    render_run_report_markdown,
+)
 from .models import (
     AttackChain,
     AttackPath,
@@ -40,10 +55,24 @@ from .models import (
 )
 from .render import render_markdown
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "AegisLLM_Operator",
     "render_markdown",
+    # agent
+    "AuthorizationError",
+    "ChainOutcome",
+    "Finding",
+    "LLMStrategist",
+    "Observation",
+    "ProbeRunner",
+    "RedTeamAgent",
+    "RunConfig",
+    "RunReport",
+    "ScopeError",
+    "SignalEvaluator",
+    "build_agent",
+    "render_run_report_markdown",
     # models
     "AttackChain",
     "AttackPath",
