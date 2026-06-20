@@ -61,6 +61,7 @@ class ExposureCategory:
         "Langfuse":     OBSERVABILITY,
         "Flowise":      AGENT_SURFACES,
         "Langflow":     AGENT_SURFACES,
+        "OpenHands":    AGENT_SURFACES,
     }
 
     # category -> canonical platform list
@@ -71,7 +72,7 @@ class ExposureCategory:
         CHAT_UIS:               ["Open WebUI", "Streamlit"],
         LEAKY_DATA_STORES:      ["Elasticsearch", "Weaviate", "Qdrant", "Milvus"],
         OBSERVABILITY:          ["MLflow", "Langfuse"],
-        AGENT_SURFACES:         ["Flowise", "Langflow"],
+        AGENT_SURFACES:         ["Flowise", "Langflow", "OpenHands"],
     }
 
 

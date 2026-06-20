@@ -1269,6 +1269,138 @@ PLATFORM_PLAYBOOK: dict = {
         "template_guidance": ["Flowise deployment must include auth env vars; unauthenticated template is rejected."],
     },
 
+    "OpenHands": {
+        "related_category": "agent_surfaces",
+        "typical_ports": [3000, 3001],
+        "surface_elements": [
+            {"type": "http_path",      "pattern": "/api/options/config",            "notes": "Runtime config incl APP_MODE; APP_MODE=oss means single-user OSS mode with no login enforced"},
+            {"type": "http_path",      "pattern": "/api/settings",                  "notes": "Agent LLM settings: llm_model, llm_base_url, whether llm_api_key is set, agent, confirmation_mode"},
+            {"type": "http_path",      "pattern": "/api/options/models",            "notes": "Model IDs the instance can route to"},
+            {"type": "http_path",      "pattern": "/api/options/agents",            "notes": "Agent classes; CodeActAgent = code-execution capable"},
+            {"type": "http_path",      "pattern": "/api/options/security-analyzers","notes": "Configured analyzers; empty = no guardrail on agent actions"},
+            {"type": "http_path",      "pattern": "/api/conversations",             "notes": "Stored conversation/session list; existence = prior agent runs recoverable"},
+            {"type": "http_path",      "pattern": "/config.json",                   "notes": "Frontend runtime config blob"},
+            {"type": "banner_pattern", "pattern": "OpenHands",                      "notes": "SPA title / favicon mmh3 -1222104632 confirm platform; note the SPA returns 200 for unknown /api paths (catchall)"},
+        ],
+        "assets": [
+            {"name": "upstream_model_backend", "description": "llm_base_url from settings points at the model runtime (often an internal Ollama/vLLM/LiteLLM); the public agent surface is the path to it."},
+            {"name": "agent_code_execution",   "description": "OpenHands runs a code-acting agent in a sandbox; an open instance with confirmation_mode off is an unauthenticated code-execution surface."},
+            {"name": "provider_api_key_state",  "description": "settings reveals whether llm_api_key is set; a configured key on an open instance is abusable inference spend."},
+            {"name": "conversation_history",    "description": "Prior agent conversations may hold source code, secrets, and internal context."},
+        ],
+        "hypotheses": [
+            {
+                "id": "H1",
+                "description": "OpenHands runs in APP_MODE=oss with no login; /api/settings and /api/options/* are readable without auth.",
+                "related_categories": ["agent_surfaces"],
+                "related_attack_paths": [],
+                "impact_if_confirmed": "high",
+            },
+            {
+                "id": "H2",
+                "description": "settings leaks an internal model backend (llm_base_url on an RFC1918 or docker host), bridging the public agent surface to a runtime that is not itself exposed.",
+                "related_categories": ["agent_surfaces", "exposed_model_runtimes"],
+                "related_attack_paths": ["ollama_11434_host_takeover"],
+                "impact_if_confirmed": "high",
+            },
+            {
+                "id": "H3",
+                "description": "Open instance offers a code-acting agent (CodeActAgent) with confirmation_mode off and no security analyzer, i.e. unauthenticated code execution.",
+                "related_categories": ["agent_surfaces"],
+                "related_attack_paths": [],
+                "impact_if_confirmed": "critical",
+            },
+        ],
+        "test_cases": [
+            {
+                "id": "OH-TC1",
+                "objective": "Confirm the instance serves config without authentication and read its auth mode.",
+                "preconditions": ["Port 3000/3001 reachable", "Authorization scope confirmed for this host"],
+                "steps_summary": [
+                    "GET /api/options/config with no Authorization header.",
+                    "Read APP_MODE from the JSON body.",
+                ],
+                "expected_weak_signals": [
+                    "JSON body contains \"APP_MODE\".",
+                    "APP_MODE value indicates single-user OSS mode (no login).",
+                ],
+                "severity_if_confirmed": "medium",
+                "notes": "Anchor on the APP_MODE JSON field, never a bare 200: the SPA returns 200 for unknown paths, so only a distinctive JSON field token confirms a real API read.",
+            },
+            {
+                "id": "OH-TC2",
+                "objective": "Read agent settings and confirm leakage of the upstream model backend.",
+                "preconditions": ["OH-TC1 indicates an open instance"],
+                "steps_summary": [
+                    "GET /api/settings with no Authorization header.",
+                    "Read llm_model, llm_base_url, and whether llm_api_key is set.",
+                ],
+                "expected_weak_signals": [
+                    "JSON body contains \"llm_base_url\".",
+                    "JSON body contains \"llm_model\".",
+                ],
+                "severity_if_confirmed": "high",
+                "notes": "llm_base_url is the pivot: an internal host:port here bridges the public surface to a runtime that is not itself exposed. Record the value; do not call the backend.",
+            },
+            {
+                "id": "OH-TC3",
+                "objective": "Enumerate agent classes to scope capability (code execution ceiling).",
+                "preconditions": ["OH-TC1 indicates an open instance"],
+                "steps_summary": [
+                    "GET /api/options/agents with no Authorization header.",
+                    "Note whether a code-acting agent (CodeActAgent) is offered.",
+                ],
+                "expected_weak_signals": [
+                    "JSON body contains \"CodeActAgent\".",
+                ],
+                "severity_if_confirmed": "medium",
+                "notes": "A CodeActAgent offering plus an open instance is the unauth-code-execution ceiling; do not exercise it. Capability scoping only.",
+            },
+            {
+                "id": "OH-TC4",
+                "objective": "Check whether prior conversations/sessions are listable without auth.",
+                "preconditions": ["OH-TC1 indicates an open instance"],
+                "steps_summary": [
+                    "GET /api/conversations with no Authorization header.",
+                    "Note whether IDs/metadata are returned.",
+                ],
+                "expected_weak_signals": [
+                    "JSON body contains \"conversation_id\".",
+                ],
+                "severity_if_confirmed": "high",
+                "notes": "Existence of recoverable sessions is the data-exposure leg. Read metadata only; do not open a conversation.",
+            },
+        ],
+        "attack_chains": [
+            {
+                "id": "OH-AC1",
+                "name": "Open OpenHands Agent Surface to Internal Backend",
+                "steps": ["OH-TC1", "OH-TC2", "OH-TC3"],
+                "summary": "Confirm the agent UI is unauthenticated (APP_MODE=oss), read settings to recover the upstream model backend and key state, then scope agent capability. The open public surface is the bridge to a model runtime that is usually not reachable on its own.",
+            },
+        ],
+        "logging_recommendations": [
+            {"event": "settings_read_no_auth", "fields": ["ip", "path", "status", "user_agent", "timestamp"], "notes": "GET /api/settings or /api/options/* from an external IP with no session is reconnaissance."},
+        ],
+        "detection_ideas": [
+            {"pattern": "GET /api/settings returns a JSON body to an external IP with no session", "severity": "high", "notes": "Open OpenHands settings leak; the response carries the upstream backend URL."},
+            {"pattern": "GET /api/options/config reachable from the internet with APP_MODE=oss", "severity": "high", "notes": "Instance is running single-user OSS mode with no login on a public interface."},
+        ],
+        "quick_wins": [
+            "Put the instance behind authentication; never expose APP_MODE=oss on a public interface.",
+            "Bind OpenHands to loopback or an internal VLAN and reach it over VPN.",
+            "Leave confirmation_mode on and set a security analyzer so agent actions are gated.",
+        ],
+        "architectural_changes": [
+            "Keep the model backend (llm_base_url) on an internal network only; the agent process should be its sole client.",
+            "Run the agent runtime in a sandbox with no host network and no credentials beyond a single scoped provider key.",
+        ],
+        "template_guidance": [
+            "OpenHands deployment template must enforce auth in front of port 3000; an unauthenticated APP_MODE=oss instance on a public interface is a deployment failure.",
+            "Provider keys belong in a secrets store injected at runtime, never returned by an unauthenticated settings endpoint.",
+        ],
+    },
+
     "JupyterHub": {
         "related_category": "notebooks",
         "typical_ports": [8000, 8888],
