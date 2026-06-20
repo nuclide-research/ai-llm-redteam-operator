@@ -43,27 +43,35 @@ The operator sits at the planning stage of the NuClide chain. Where [aimap](http
 
 ```bash
 git clone https://github.com/nuclide-research/ai-llm-redteam-operator
+cd ai-llm-redteam-operator
+pip install -e .          # installs the `ai-llm-redteam-operator` console command
 ```
 
-Python 3.8 or later. No third-party packages: `dataclasses`, `argparse`, `sqlite3`, and `json` from the standard library. The package directory carries a hyphen, so run it from the parent directory as a module or vendor it under an underscore alias.
+Python 3.8 or later, no third-party packages. The runtime uses only `dataclasses`, `argparse`, `sqlite3`, and `json` from the standard library; `pip install` just registers the console entry point. To run without installing, invoke the module from the repository root:
+
+```bash
+python -m ai_llm_redteam_operator.cli category open_gateways
+```
 
 # Usage
 
+After `pip install -e .`, the `ai-llm-redteam-operator` command is on your path. Drop the `python -m ai_llm_redteam_operator.cli` prefix below for the installed form; both are equivalent.
+
 ```bash
 # A whole exposure category
-python -m ai_llm_redteam_operator.cli category open_gateways
+ai-llm-redteam-operator category open_gateways
 
 # A single platform, as JSON
-python -m ai_llm_redteam_operator.cli platform LiteLLM --format json
+ai-llm-redteam-operator platform LiteLLM --format json
 
 # A named attack path, written to a file
-python -m ai_llm_redteam_operator.cli attack_path flowise_to_weaviate_pii_dump --out flowise.md
+ai-llm-redteam-operator attack_path flowise_to_weaviate_pii_dump --out flowise.md
 
 # Filter the host summary
-python -m ai_llm_redteam_operator.cli category open_gateways --min-severity high --sectors commercial,healthcare
+ai-llm-redteam-operator category open_gateways --min-severity high --sectors commercial,healthcare
 
 # List known values for a focus type
-python -m ai_llm_redteam_operator.cli --list-values category
+ai-llm-redteam-operator --list-values category
 ```
 
 Flags:
@@ -136,26 +144,29 @@ A packet is seven sections, defined as dataclasses in `models.py`:
 The pipeline:
 
 ```
-cli.py        argument parsing, focus dispatch, output routing
-  |
-  v
-operator.py   AegisLLM_Operator: one builder per packet section,
-  |             keyed on (focus_type, focus_value), _generic fallback
-  |
-  +-- models.py    dataclasses for every node + category / attack-path registries
-  +-- render.py    ScenarioPacket dict -> structured Markdown report
-  +-- playbook.py  tactical knowledge base, one dict entry per focus value
+ai_llm_redteam_operator/
+  cli.py        argument parsing, focus dispatch, output routing
+    |
+    v
+  operator.py   AegisLLM_Operator: one builder per packet section,
+    |             keyed on (focus_type, focus_value)
+    |             - two scenarios hand-authored in full
+    |             - every other value built from playbook.py via adapters
+    |
+    +-- models.py    dataclasses for every node + category / attack-path registries
+    +-- render.py    ScenarioPacket dict -> structured Markdown report
+    +-- playbook.py  tactical knowledge base, one dict entry per focus value
 ```
+
+Every advertised focus value produces a complete packet. Two scenarios (`category / open_gateways` and `attack_path / flowise_to_weaviate_pii_dump`) are hand-authored at full depth in `operator.py`. Every other value is built from `playbook.py`: the operator resolves the entry (a platform falls back to the playbook of its category), then adapters map it onto the packet dataclasses, synthesizing the fields the playbook does not carry (probe IDs, inferred noise levels, asset cross-links). A focus value with no entry anywhere is the only case that hits the minimal stub builders.
 
 # Status
 
-Early release, `0.1.0`. Read this before relying on output.
+Functional release, `0.1.0`. All eight categories, all seventeen platforms, and all five attack paths render full Markdown and JSON packets.
 
-- **Fully built scenarios:** `category / open_gateways` and `attack_path / flowise_to_weaviate_pii_dump` carry rich, hand-authored packets in `operator.py`. Every other focus value falls through to the `_generic` builders, which emit a valid packet skeleton with explicit `TODO` markers.
-- **Stubbed data access:** `_load_details`, `_load_coords`, and `_query_host_summary` return empty defaults. Host-summary counts in the two built scenarios are hardcoded illustrative values. The `nuclide.db` query is present as a documented `TODO` with the assumed schema. `--min-severity` and `--sectors` are plumbed but not yet applied.
-- **`playbook.py` not wired in:** it holds a complete tactical knowledge base for all eight categories, structured to map 1:1 onto the model fields, but `operator.py` does not import it yet. Wiring the builders to read from the playbook dicts lights up the remaining six categories without touching `operator.py`.
+One subsystem is intentionally stubbed: the live host-summary counts. `_query_host_summary` returns zeros pending a real `nuclide.db`; the method documents the assumed schema and example query, and `--min-severity` / `--sectors` flow into it but have no effect until it is wired to a database. The two hand-authored scenarios show illustrative counts. Everything else in a packet (recon, threat model, test cases, chains, detections, hardening) is live.
 
-To extend: add the value to the relevant registry in `models.py`, add a matching entry to the corresponding dict in `playbook.py`, and for a bespoke scenario add dedicated `_tp_* / _recon_* / _tm_* / _tc_* / _ac_* / _dt_* / _h_*` builders in `operator.py`.
+To extend: add the value to the relevant registry in `models.py`, then add a matching entry to the corresponding dict in `playbook.py`. The adapters pick it up with no operator changes. For a bespoke, full-depth scenario, add dedicated `_tp_* / _recon_* / _tm_* / _tc_* / _ac_* / _dt_* / _h_*` builders in `operator.py` and route to them from the dispatch methods.
 
 # Scope
 

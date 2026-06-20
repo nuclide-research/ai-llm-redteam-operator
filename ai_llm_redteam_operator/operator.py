@@ -37,6 +37,7 @@ from .models import (
     ThreatHypothesis,
     ThreatModel,
 )
+from .playbook import CATEGORY_PLAYBOOK, get_playbook_entry
 
 
 # ---------------------------------------------------------------------------
@@ -1724,122 +1725,399 @@ class AegisLLM_Operator:
         )
 
     # ==================================================================
-    # GENERIC FALLBACK
+    # PLAYBOOK-BACKED BUILDERS (every focus value not handled above)
     # ==================================================================
+    #
+    # These read the tactical knowledge base in playbook.py and adapt each
+    # entry onto the packet dataclasses. A category resolves to its
+    # CATEGORY_PLAYBOOK entry, an attack path to ATTACK_PATH_PLAYBOOK, and a
+    # platform to its PLATFORM_PLAYBOOK entry (falling back to the playbook of
+    # the category it belongs to). Only a focus value with no entry anywhere
+    # falls through to the minimal stub builders at the bottom.
+
+    def _entry(self, focus_type: str, focus_value: str) -> Dict:
+        """Resolve the playbook entry for a focus, with platform->category fallback."""
+        entry = get_playbook_entry(focus_type, focus_value)
+        if not entry and focus_type == "platform":
+            category = ExposureCategory.PLATFORM_MAP.get(focus_value)
+            if category:
+                entry = CATEGORY_PLAYBOOK.get(category, {})
+        return entry
 
     def _tp_generic(self, focus_type: str, focus_value: str, options: Dict) -> TargetProfile:
-        # TODO: wire to _query_host_summary() with platform/category inference
+        entry = self._entry(focus_type, focus_value)
+        if not entry:
+            return self._tp_stub(focus_type, focus_value, options)
+
+        platforms = entry.get("typical_platforms") or entry.get("related_platforms") or []
+        if not platforms and focus_type == "platform":
+            platforms = [focus_value]
+        if not platforms:
+            platforms = ExposureCategory.PLATFORMS.get(focus_value, [])
+
+        notable = [h["description"] for h in entry.get("hypotheses", [])]
+        if not notable:
+            notable = [se["notes"] for se in entry.get("surface_elements", [])][:5]
+
+        rep = entry.get("description")
+        if not rep:
+            label = focus_value.replace("_", " ")
+            plat_str = ", ".join(platforms) if platforms else "n/a"
+            rep = f"{label} assessment. Typical platforms: {plat_str}."
+            if entry.get("hypotheses"):
+                rep += f" Primary risk: {entry['hypotheses'][0]['description']}"
+
+        return TargetProfile(
+            focus_type=focus_type,  # type: ignore[arg-type]
+            focus_value=focus_value,
+            host_summary=self._query_host_summary(
+                min_severity=options.get("min_severity"),
+                sectors=options.get("sectors"),
+            ),
+            typical_platforms=platforms,
+            notable_patterns=notable or ["See recon mapping and threat model below."],
+            representative_notes=rep,
+        )
+
+    def _recon_generic(self, focus_type: str, focus_value: str, options: Dict) -> ReconMapping:
+        entry = self._entry(focus_type, focus_value)
+        if not entry:
+            return self._recon_stub(focus_value)
+        surface = _to_surface_elements(entry)
+        probes = _to_probe_patterns(entry, surface)
+        phases = _to_recon_phases(entry, probes)
+        return ReconMapping(surface, probes, phases)
+
+    def _tm_generic(self, focus_type: str, focus_value: str, options: Dict) -> ThreatModel:
+        entry = self._entry(focus_type, focus_value)
+        if not entry:
+            return self._tm_stub(focus_value)
+        return ThreatModel(assets=_to_assets(entry), hypotheses=_to_hypotheses(entry))
+
+    def _tc_generic(self, focus_type: str, focus_value: str, options: Dict) -> List[TestCase]:
+        entry = self._entry(focus_type, focus_value)
+        if not entry:
+            return self._tc_stub(focus_value)
+        return _to_test_cases(entry)
+
+    def _ac_generic(self, focus_type: str, focus_value: str, options: Dict) -> List[AttackChain]:
+        entry = self._entry(focus_type, focus_value)
+        if not entry:
+            return self._ac_stub(focus_value)
+        ideas = entry.get("detection_ideas", [])
+        chains = _to_attack_chains(entry, ideas, focus_type, focus_value)
+        if not chains:
+            # Entries can ship an empty attack_chains list (e.g. key_abuse).
+            # Synthesize a single chain from the test-case sequence.
+            tc_ids = [tc["id"] for tc in entry.get("test_cases", [])] or ["TC1"]
+            chains = [AttackChain(
+                id="AC-1",
+                name=f"{focus_value.replace('_', ' ')} exposure chain",
+                steps=tc_ids,
+                summary="Run the test cases in sequence to confirm and scope the exposure.",
+                overall_noise_profile="low_noise",
+                defender_learning_goals=_default_learning_goals(ideas),
+                related_attack_paths=_collect_attack_paths(entry, focus_type, focus_value),
+            )]
+        return chains
+
+    def _dt_generic(self, focus_type: str, focus_value: str, options: Dict) -> DetectionTelemetry:
+        entry = self._entry(focus_type, focus_value)
+        if not entry:
+            return self._dt_stub(focus_value)
+        return DetectionTelemetry(
+            logging_recommendations=_to_logging(entry),
+            detection_ideas=_to_detection_ideas(entry),
+            stealth_considerations=_default_stealth(focus_value),
+        )
+
+    def _h_generic(self, focus_type: str, focus_value: str, options: Dict) -> Hardening:
+        entry = self._entry(focus_type, focus_value)
+        if not entry:
+            return self._h_stub(focus_value)
+        ideas = entry.get("detection_ideas", [])
+        de_actions = [
+            f"Alert on: {d['pattern']} (severity: {d.get('severity', 'medium')})."
+            for d in ideas
+        ] or ["Instrument the logging events above; route any unauthenticated 200 to a P1 alert."]
+        return Hardening(
+            quick_wins=entry.get("quick_wins", []),
+            architectural_changes=entry.get("architectural_changes", []),
+            detection_engineering_actions=de_actions,
+            template_guidance=entry.get("template_guidance", []),
+        )
+
+    # ==================================================================
+    # MINIMAL STUBS (only reached for a focus with no playbook entry)
+    # ==================================================================
+
+    def _tp_stub(self, focus_type: str, focus_value: str, options: Dict) -> TargetProfile:
         return TargetProfile(
             focus_type=focus_type,  # type: ignore[arg-type]
             focus_value=focus_value,
             host_summary=dict(_STUB_HOST_SUMMARY_EMPTY),
             typical_platforms=ExposureCategory.PLATFORMS.get(focus_value, []),
-            notable_patterns=["TODO: populate from survey data for this focus."],
-            representative_notes=f"TODO: build representative profile for {focus_type}={focus_value}.",
+            notable_patterns=[f"No playbook entry for {focus_type}={focus_value}."],
+            representative_notes=f"No playbook entry for {focus_type}={focus_value}.",
         )
 
-    def _recon_generic(self, focus_type: str, focus_value: str, options: Dict) -> ReconMapping:
+    def _recon_stub(self, focus_value: str) -> ReconMapping:
         return ReconMapping(
-            surface_elements=[
-                SurfaceElement("http_path", "/health", "TODO: add platform-specific paths"),
-            ],
-            http_probe_patterns=[
-                HTTPProbePattern(
-                    id="P-GEN-001",
-                    description="Generic liveness probe",
-                    methods=["GET"],
-                    paths=["/health", "/status"],
-                    headers={},
-                    body_shape=None,
-                    aggressiveness="low_noise",
-                    goals=["Confirm service liveness"],
-                    notes=f"TODO: add {focus_value}-specific probe patterns.",
-                )
-            ],
-            recon_phases=[
-                ReconPhase(
-                    id="PHASE-GEN-1",
-                    name="Baseline liveness",
-                    description="Confirm target is live before implementing specialized probes.",
-                    probe_ids=["P-GEN-001"],
-                )
-            ],
+            surface_elements=[SurfaceElement("http_path", "/health", "generic liveness path")],
+            http_probe_patterns=[HTTPProbePattern(
+                id="P-GEN-001", description="Generic liveness probe",
+                methods=["GET"], paths=["/health", "/status"], headers={},
+                body_shape=None, aggressiveness="low_noise",
+                goals=["Confirm service liveness"],
+                notes=f"No playbook entry for {focus_value}.",
+            )],
+            recon_phases=[ReconPhase(
+                id="PHASE-GEN-1", name="Baseline liveness",
+                description="Confirm target is live.", probe_ids=["P-GEN-001"],
+            )],
         )
 
-    def _tm_generic(self, focus_type: str, focus_value: str, options: Dict) -> ThreatModel:
+    def _tm_stub(self, focus_value: str) -> ThreatModel:
         return ThreatModel(
-            assets=[
-                Asset(
-                    name="generic_service_data",
-                    description=f"TODO: identify assets for {focus_value}.",
-                    criticality="medium",
-                )
-            ],
-            hypotheses=[
-                ThreatHypothesis(
-                    id="H-GEN-001",
-                    description=f"TODO: define threat hypotheses for {focus_value}.",
-                    related_categories=[focus_value],
-                    related_attack_paths=[],
-                    impact_if_confirmed="medium",
-                    confidence="low",
-                    notes="Generic stub - implement specialized builder for this focus.",
-                )
-            ],
+            assets=[Asset("service_data", f"Assets for {focus_value} not yet cataloged.", "medium")],
+            hypotheses=[ThreatHypothesis(
+                id="H-GEN-001", description=f"No playbook entry for {focus_value}.",
+                related_categories=[focus_value], related_attack_paths=[],
+                impact_if_confirmed="medium", confidence="low",
+                notes="No playbook entry for this focus.",
+            )],
         )
 
-    def _tc_generic(self, focus_type: str, focus_value: str, options: Dict) -> List[TestCase]:
-        return [
-            TestCase(
-                id="TC-GEN-001",
-                objective=f"TODO: define test cases for {focus_value}.",
-                preconditions=["Service confirmed live."],
-                steps_summary=["TODO: implement test case steps."],
-                expected_weak_signals=["TODO: define expected signals."],
-                severity_if_confirmed="medium",
-                noise_level="low_noise",
-                detection_focus=["anomalous_paths"],
-                related_assets=["generic_service_data"],
-                notes="Generic stub - implement specialized builder for this focus.",
-            )
-        ]
+    def _tc_stub(self, focus_value: str) -> List[TestCase]:
+        return [TestCase(
+            id="TC-GEN-001", objective=f"No playbook entry for {focus_value}.",
+            preconditions=["Service confirmed live."], steps_summary=["Confirm liveness."],
+            expected_weak_signals=["Service responds."], severity_if_confirmed="medium",
+            noise_level="low_noise", detection_focus=["anomalous_paths"],
+            related_assets=["service_data"], notes="No playbook entry for this focus.",
+        )]
 
-    def _ac_generic(self, focus_type: str, focus_value: str, options: Dict) -> List[AttackChain]:
-        return [
-            AttackChain(
-                id="AC-GEN-001",
-                name=f"TODO: define attack chain for {focus_value}",
-                steps=["TC-GEN-001"],
-                summary="TODO: implement attack chain for this focus.",
-                overall_noise_profile="low_noise",
-                defender_learning_goals=["TODO: define defender learning goals."],
-                related_attack_paths=[],
-            )
-        ]
+    def _ac_stub(self, focus_value: str) -> List[AttackChain]:
+        return [AttackChain(
+            id="AC-GEN-001", name=f"No playbook entry for {focus_value}",
+            steps=["TC-GEN-001"], summary="No playbook entry for this focus.",
+            overall_noise_profile="low_noise",
+            defender_learning_goals=["Add a playbook entry to enable this focus."],
+            related_attack_paths=[],
+        )]
 
-    def _dt_generic(self, focus_type: str, focus_value: str, options: Dict) -> DetectionTelemetry:
+    def _dt_stub(self, focus_value: str) -> DetectionTelemetry:
         return DetectionTelemetry(
-            logging_recommendations=[
-                LoggingRecommendation(
-                    event="generic_service_access",
-                    fields=["timestamp", "source_ip", "path", "response_code"],
-                    notes=f"TODO: define logging for {focus_value}.",
-                )
-            ],
-            detection_ideas=[
-                DetectionIdea(
-                    pattern=f"TODO: define detection patterns for {focus_value}.",
-                    severity="medium",
-                    notes="Generic stub.",
-                )
-            ],
-            stealth_considerations=["TODO: add stealth analysis for this focus."],
+            logging_recommendations=[LoggingRecommendation(
+                "service_access", ["timestamp", "source_ip", "path", "response_code"],
+                f"No playbook entry for {focus_value}.",
+            )],
+            detection_ideas=[DetectionIdea(
+                f"No playbook entry for {focus_value}.", "medium", "Add a playbook entry.",
+            )],
+            stealth_considerations=_default_stealth(focus_value),
         )
 
-    def _h_generic(self, focus_type: str, focus_value: str, options: Dict) -> Hardening:
+    def _h_stub(self, focus_value: str) -> Hardening:
         return Hardening(
-            quick_wins=[f"TODO: define hardening for {focus_value}."],
-            architectural_changes=["TODO: define architectural changes."],
-            detection_engineering_actions=["TODO: define detection engineering actions."],
-            template_guidance=["TODO: define template guidance."],
+            quick_wins=[f"Add a playbook entry for {focus_value} to enable hardening guidance."],
+            architectural_changes=["See category-level guidance for this platform's class."],
+            detection_engineering_actions=["Instrument access logging on the service."],
+            template_guidance=["Enforce authentication before exposing the service."],
         )
+
+
+# ---------------------------------------------------------------------------
+# Playbook -> dataclass adapters
+# ---------------------------------------------------------------------------
+#
+# Playbook entries carry a subset of each dataclass's fields. These adapters
+# fill the remainder with sensible, honest defaults (a synthesized probe id, an
+# inferred noise level, asset cross-links) so a packet built from the playbook
+# is structurally identical to a hand-authored one.
+
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_NOISY_TOKENS = ("admin", "credential", "config", "/.env", "key", "spend", "objects")
+
+
+def _probe_aggressiveness(methods: List[str], paths: List[str]) -> str:
+    """Low-noise for read-only liveness probes, medium once a write or a
+    sensitive path is in play."""
+    if any(m.upper() in _WRITE_METHODS for m in methods):
+        return "medium"
+    joined = " ".join(paths).lower()
+    if any(tok in joined for tok in _NOISY_TOKENS):
+        return "medium"
+    return "low_noise"
+
+
+def _to_surface_elements(entry: Dict) -> List[SurfaceElement]:
+    elems = [
+        SurfaceElement(se["type"], se["pattern"], se["notes"])
+        for se in entry.get("surface_elements", [])
+    ]
+    have_ports = {e.pattern for e in elems if e.type == "port"}
+    for port in entry.get("typical_ports", []):
+        if str(port) not in have_ports:
+            elems.append(SurfaceElement("port", str(port), "default port for this platform"))
+    return elems
+
+
+def _to_probe_patterns(entry: Dict, surface: List[SurfaceElement]) -> List[HTTPProbePattern]:
+    patterns: List[HTTPProbePattern] = []
+    for i, pp in enumerate(entry.get("http_probe_patterns", []), start=1):
+        methods = pp.get("methods", ["GET"])
+        paths = pp.get("paths", [])
+        patterns.append(HTTPProbePattern(
+            id=f"PB-{i:03d}",
+            description=pp.get("description", ""),
+            methods=methods,
+            paths=paths,
+            headers=pp.get("headers", {}),
+            body_shape=pp.get("body_shape"),
+            aggressiveness=_probe_aggressiveness(methods, paths),
+            goals=[f"Probe {', '.join(paths)} and classify the response"] if paths else
+                  ["Confirm the surface and classify the response"],
+            notes=pp.get("notes", ""),
+        ))
+    if patterns:
+        return patterns
+
+    # Platform entries carry no probe patterns; synthesize one GET sweep over
+    # the http_path surface elements so the recon section is never empty.
+    http_paths = [se.pattern for se in surface if se.type == "http_path"]
+    if http_paths:
+        patterns.append(HTTPProbePattern(
+            id="PB-001",
+            description="Unauthenticated surface sweep",
+            methods=["GET"],
+            paths=http_paths,
+            headers={},
+            body_shape=None,
+            aggressiveness=_probe_aggressiveness(["GET"], http_paths),
+            goals=["Confirm which surface paths respond without authentication"],
+            notes="One GET per surface path, no auth header. A 200 with data is the open-access signal.",
+        ))
+    return patterns
+
+
+def _to_recon_phases(entry: Dict, probes: List[HTTPProbePattern]) -> List[ReconPhase]:
+    probe_ids = [p.id for p in probes] or ["PB-001"]
+    steps = entry.get("mapping_strategy", [])
+    if steps:
+        return [ReconPhase(
+            id="PHASE-1",
+            name="Mapping strategy",
+            description="  \n".join(steps),
+            probe_ids=probe_ids,
+        )]
+    return [ReconPhase(
+        id="PHASE-1",
+        name="Baseline enumeration",
+        description=("Confirm liveness and fingerprint the platform, then probe the surface "
+                     "paths above without authentication and classify each response."),
+        probe_ids=probe_ids,
+    )]
+
+
+def _to_assets(entry: Dict) -> List[Asset]:
+    return [
+        Asset(a["name"], a["description"], a.get("criticality", "high"))
+        for a in entry.get("assets", [])
+    ]
+
+
+def _to_hypotheses(entry: Dict) -> List[ThreatHypothesis]:
+    out = []
+    for h in entry.get("hypotheses", []):
+        out.append(ThreatHypothesis(
+            id=h["id"],
+            description=h["description"],
+            related_categories=h.get("related_categories", []),
+            related_attack_paths=h.get("related_attack_paths", []),
+            impact_if_confirmed=h.get("impact_if_confirmed", "medium"),
+            confidence=h.get("confidence", "medium"),
+            notes=h.get("notes", "Confirm against the live target before asserting the finding."),
+        ))
+    return out
+
+
+def _to_test_cases(entry: Dict) -> List[TestCase]:
+    asset_names = [a["name"] for a in entry.get("assets", [])]
+    out = []
+    for tc in entry.get("test_cases", []):
+        out.append(TestCase(
+            id=tc["id"],
+            objective=tc["objective"],
+            preconditions=tc.get("preconditions", []),
+            steps_summary=tc.get("steps_summary", []),
+            expected_weak_signals=tc.get("expected_weak_signals", []),
+            severity_if_confirmed=tc.get("severity_if_confirmed", "medium"),
+            noise_level=tc.get("noise_level", "low_noise"),
+            detection_focus=tc.get("detection_focus", ["anomalous_paths", "auth_failures"]),
+            related_assets=tc.get("related_assets", asset_names),
+            notes=tc.get("notes", ""),
+        ))
+    return out
+
+
+def _collect_attack_paths(entry: Dict, focus_type: str, focus_value: str) -> List[str]:
+    paths: List[str] = []
+    for h in entry.get("hypotheses", []):
+        for p in h.get("related_attack_paths", []):
+            if p not in paths:
+                paths.append(p)
+    if not paths and focus_type == "attack_path":
+        paths = [focus_value]
+    return paths
+
+
+def _default_learning_goals(ideas: List[Dict]) -> List[str]:
+    goals = [f"Build a detection for: {d['pattern']}" for d in ideas[:3]]
+    return goals or ["Instrument the surface paths above; alert on any unauthenticated 200 response."]
+
+
+def _to_attack_chains(entry: Dict, ideas: List[Dict],
+                      focus_type: str, focus_value: str) -> List[AttackChain]:
+    related = _collect_attack_paths(entry, focus_type, focus_value)
+    goals_default = _default_learning_goals(ideas)
+    out = []
+    for ac in entry.get("attack_chains", []):
+        out.append(AttackChain(
+            id=ac["id"],
+            name=ac["name"],
+            steps=ac.get("steps", []),
+            summary=ac.get("summary", ""),
+            overall_noise_profile=ac.get("overall_noise_profile", "low_noise"),
+            defender_learning_goals=ac.get("defender_learning_goals", goals_default),
+            related_attack_paths=ac.get("related_attack_paths", related),
+        ))
+    return out
+
+
+def _to_logging(entry: Dict) -> List[LoggingRecommendation]:
+    return [
+        LoggingRecommendation(r["event"], r.get("fields", []), r.get("notes", ""))
+        for r in entry.get("logging_recommendations", [])
+    ]
+
+
+def _to_detection_ideas(entry: Dict) -> List[DetectionIdea]:
+    return [
+        DetectionIdea(d["pattern"], d.get("severity", "medium"), d.get("notes", ""))
+        for d in entry.get("detection_ideas", [])
+    ]
+
+
+def _default_stealth(focus_value: str) -> List[str]:
+    label = focus_value.replace("_", " ")
+    return [
+        ("A careful operator spaces probes with jitter and rotates source IPs and user-agents "
+         "to blend with normal traffic. Residual signal: requests to the surface paths above "
+         "with no prior authenticated session."),
+        ("Reading schema and metadata rather than bulk records keeps request volume low. "
+         "Residual signal: access to enumeration endpoints from outside the management network."),
+        (f"Using a credential extracted earlier in the {label} chain makes later requests look "
+         "authenticated and evades unauthenticated-access rules. Residual signal: the source IP "
+         "sits outside the application's expected egress range."),
+    ]
