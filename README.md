@@ -1,6 +1,5 @@
 <h1 align="center">ai-llm-redteam-operator</h1>
 
-<h4 align="center">Plan an AI/LLM red-team scenario, then run it against one authorized target.</h4>
 
 <p align="center">
   <a href="https://github.com/nuclide-research/ai-llm-redteam-operator/releases"><img src="https://img.shields.io/github/v/release/nuclide-research/ai-llm-redteam-operator?style=flat-square" alt="release"></a>
